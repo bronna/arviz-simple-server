@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link type="text/css" rel="stylesheet" href="main.css">
+
+    <title>Make Your First Data Visualization in AR</title>
+</head>
+<body>
+    <div id="info">
+        Dataviz in AR 5
+        <br/>(Chrome Android 81+, Mozilla XRViewer on iOS)
+        <br/>Using <a href="https://threejs.org" target="_blank" rel="noopener">three.js</a> 
+    </div>
+
+    <!-- <script src="js/libs/ammo.wasm.js"></script> -->
+
+    <!-- Import maps polyfill -->
+    <!-- Remove this when import maps will be widely supported -->
+    <script async src="https://unpkg.com/es-module-shims@1.3.6/dist/es-module-shims.js"></script>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.142.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.142.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three'
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
+        import { ARButton } from 'three/addons/webxr/ARButton.js'
+
+        let container
+        let camera, scene, renderer
+        let controller1, controller2
+
+        let currentlySelected = null
+
+        let raycaster
+
+        const intersected = []
+        const tempMatrix = new THREE.Matrix4()
+
+        let group
+
+        init()
+        animate()
+
+        function init() {
+
+            container = document.createElement( 'div' )
+            document.body.appendChild( container )
+
+            scene = new THREE.Scene()
+
+            camera = new THREE.PerspectiveCamera( 50, window.innerWidth / window.innerHeight, 0.1, 10 )
+            camera.position.set( 0, 0, 3 )
+
+            const controls = new OrbitControls( camera, container )
+            controls.minDistance = 0
+            controls.maxDistance = 8
+
+            scene.add( new THREE.HemisphereLight( 0x808080, 0x606060 ) )
+
+            const light = new THREE.DirectionalLight( 0xffffff )
+            light.position.set( 0, 6, 0 )
+            scene.add( light )
+
+            group = new THREE.Group()
+            scene.add( group )
+
+            // Custom shader material
+            const gradientMaterial = new THREE.ShaderMaterial({
+                uniforms: {
+                    time: { value: 0 },
+                    colorA: { value: new THREE.Color(0xff0080) },
+                    colorB: { value: new THREE.Color(0x7ebaa0) },
+                    colorC: { value: new THREE.Color(0x7385bf) },
+                    gradientDirection: { value: new THREE.Vector3(1, 1, 1) },
+                    emissiveColor: { value: new THREE.Color(0x000000) },
+                    emissiveIntensity: { value: 0.0 },
+                    fresnelColor: { value: new THREE.Color(0xffffff) },
+                    fresnelIntensity: { value: 0.5 },
+                    glowColor: { value: new THREE.Color(0xffffff) },
+                    glowIntensity: { value: 0.5 }
+                },
+                vertexShader: `
+                    varying vec2 vUv;
+                    varying vec3 vPosition;
+                    varying vec3 vNormal;
+                    varying vec3 vViewPosition;
+                    void main() {
+                        vUv = uv;
+                        vPosition = position;
+                        vNormal = normalize(normalMatrix * normal);
+                        vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+                        vViewPosition = -mvPosition.xyz;
+                        gl_Position = projectionMatrix * mvPosition;
+                    }
+                `,
+                fragmentShader: `
+                    uniform float time;
+                    uniform vec3 colorA;
+                    uniform vec3 colorB;
+                    uniform vec3 colorC;
+                    uniform vec3 gradientDirection;
+                    uniform vec3 emissiveColor;
+                    uniform float emissiveIntensity;
+                    uniform vec3 fresnelColor;
+                    uniform float fresnelIntensity;
+                    uniform vec3 glowColor;
+                    uniform float glowIntensity;
+                    varying vec2 vUv;
+                    varying vec3 vPosition;
+                    varying vec3 vNormal;
+                    varying vec3 vViewPosition;
+
+                    void main() {
+                        vec3 color = mix(colorA, colorB, vUv.y);
+                        float gradientFactor = dot(vPosition, gradientDirection);
+                        color = mix(color, colorC, sin(gradientFactor * 10.0 + time) * 0.5 + 0.5);
+
+                        // Add emissive effect
+                        color += emissiveColor * emissiveIntensity;
+
+                        // Add subtle Fresnel effect
+                        vec3 viewDir = normalize(vViewPosition);
+                        float fresnel = pow(1.0 - max(dot(viewDir, vNormal), 0.0), 3.0);
+                        color = mix(color, fresnelColor, fresnel * fresnelIntensity);
+
+                        // Add pulsating glow effect
+                        float glow = sin(time * 2.0) * 0.5 + 0.5;
+                        color += glowColor * glow * glowIntensity;
+
+                        gl_FragColor = vec4(color, 1.0);
+                    }
+                `,
+            })
+
+            for ( let i = 0; i < 20; i ++ ) {
+
+                const geometry = new THREE.IcosahedronGeometry( 0.2, 8 )
+
+                const material = gradientMaterial.clone()  // Clone the material for each object
+                material.uniforms.colorA.value.setHSL(Math.random(), 0.5, 0.5)
+                material.uniforms.colorB.value.setHSL(Math.random(), 0.5, 0.5)
+                material.uniforms.colorC.value.setHSL(Math.random(), 0.5, 0.5)
+
+                // Set random gradient direction
+                material.uniforms.gradientDirection.value.set(
+                    Math.random() * 2 - 1,
+                    Math.random() * 2 - 1,
+                    Math.random() * 2 - 1
+                ).normalize()
+
+                // Set random Fresnel color and intensity
+                material.uniforms.fresnelColor.value.setHSL(Math.random(), 0.5, 0.7)
+                material.uniforms.fresnelIntensity.value = Math.random() * 0.3 + 0.2
+
+                // Set random glow color and intensity
+                material.uniforms.glowColor.value.setHSL(Math.random(), 0.7, 0.5)
+                material.uniforms.glowIntensity.value = Math.random() * 0.2 + 0.1
+
+                const object = new THREE.Mesh( geometry, material )
+
+                object.position.x = Math.random() * 4 - 2
+                object.position.y = Math.random() * 1.75 - 0.25
+                object.position.z = Math.random() * -6
+
+                object.scale.setScalar( Math.random() + 0.5 )
+
+                // Add properties for floating animation
+                object.userData.floatSpeed = Math.random() + 0.3
+                object.userData.floatAmplitude = Math.random() * 0.05
+                object.userData.initialY = object.position.y
+                object.userData.initialX = object.position.x
+                object.userData.initialZ = object.position.z
+
+                // Add placeholder data to each sphere
+                object.userData.data = `name:${i + 1}`
+
+                // Create a text sprite for each sphere (initially hidden)
+                const sprite = createTextSprite(object.userData.data)
+                sprite.visible = false
+                object.add(sprite)
+
+                group.add( object )
+
+            }
+
+            //
+
+            renderer = new THREE.WebGLRenderer( { antialias: true, alpha: true } )
+            renderer.setPixelRatio( window.devicePixelRatio )
+            renderer.setSize( window.innerWidth, window.innerHeight )
+            renderer.outputEncoding = THREE.sRGBEncoding
+            renderer.xr.enabled = true
+            container.appendChild( renderer.domElement )
+
+            document.body.appendChild( ARButton.createButton( renderer ) )
+
+            // controllers
+
+            controller1 = renderer.xr.getController( 0 )
+            controller1.addEventListener( 'selectstart', onSelectStart )
+            controller1.addEventListener( 'selectend', onSelectEnd )
+            scene.add( controller1 )
+
+            controller2 = renderer.xr.getController( 1 )
+            controller2.addEventListener( 'selectstart', onSelectStart )
+            controller2.addEventListener( 'selectend', onSelectEnd )
+            scene.add( controller2 )
+
+            raycaster = new THREE.Raycaster()
+
+            //
+
+            window.addEventListener( 'resize', onWindowResize )
+
+        }
+
+        function onWindowResize() {
+
+            camera.aspect = window.innerWidth / window.innerHeight
+            camera.updateProjectionMatrix()
+
+            renderer.setSize( window.innerWidth, window.innerHeight )
+
+        }
+
+        function createTextSprite(message) {
+            const canvas = document.createElement('canvas')
+            const context = canvas.getContext('2d')
+            canvas.width = 256
+            canvas.height = 128
+
+            context.font = 'Bold 24px Arial'
+            context.fillStyle = 'rgba(255,255,255,1)'
+            context.fillText(message, 0, 50)
+
+            const texture = new THREE.CanvasTexture(canvas)
+            const spriteMaterial = new THREE.SpriteMaterial({ map: texture })
+            const sprite = new THREE.Sprite(spriteMaterial)
+            sprite.scale.set(0.5, 0.25, 1)
+            sprite.position.set(0.3, 0.1, 0.3)  // Position the sprite above the sphere
+
+            return sprite
+        }
+
+        function onSelectStart( event ) {
+            const controller = event.target
+            const intersections = getIntersections( controller )
+
+            if ( intersections.length > 0 ) {
+                const intersection = intersections[ 0 ]
+                const object = intersection.object
+
+                // If there was a previously selected object, deselect it
+                if (currentlySelected) {
+                    currentlySelected.material.uniforms.emissiveIntensity.value = 0.0
+                    const oldSprite = currentlySelected.children.find(child => child instanceof THREE.Sprite)
+                    if (oldSprite) {
+                        oldSprite.visible = false
+                    }
+                }
+
+                // Select the new object
+                object.material.uniforms.emissiveColor.value.setRGB(0, 0, 1) // Blue emissive color
+                object.material.uniforms.emissiveIntensity.value = 1.0
+                controller.attach( object )
+                controller.userData.selected = object
+                currentlySelected = object
+
+                // Show the text sprite
+                const sprite = object.children.find(child => child instanceof THREE.Sprite)
+                if (sprite) {
+                    sprite.visible = true
+                }
+            }
+        }
+
+        function onSelectEnd( event ) {
+
+            const controller = event.target
+
+            if ( controller.userData.selected !== undefined ) {
+                const object = controller.userData.selected
+                group.attach( object )
+                controller.userData.selected = undefined
+            }
+
+        }
+
+        function getIntersections( controller ) {
+
+            tempMatrix.identity().extractRotation( controller.matrixWorld )
+
+            raycaster.ray.origin.setFromMatrixPosition( controller.matrixWorld )
+            raycaster.ray.direction.set( 0, 0, - 1 ).applyMatrix4( tempMatrix )
+
+            return raycaster.intersectObjects( group.children, false )
+
+        }
+
+        function intersectObjects( controller ) {
+
+            // Do not highlight when already selected
+            if ( controller.userData.selected !== undefined ) return
+
+            const intersections = getIntersections( controller )
+
+            if ( intersections.length > 0 ) {
+                const intersection = intersections[ 0 ]
+                const object = intersection.object
+
+                if (object !== currentlySelected) {
+                    object.material.uniforms.emissiveColor.value.setRGB(1, 0, 0) // Red emissive color
+                    object.material.uniforms.emissiveIntensity.value = 1.0
+                    intersected.push( object )
+                }
+            }
+
+        }
+
+        function cleanIntersected() {
+
+            while ( intersected.length ) {
+                const object = intersected.pop()
+                if (object !== currentlySelected) {
+                    object.material.uniforms.emissiveIntensity.value = 0.0
+                }
+            }
+
+        }
+
+        //
+
+        function animate() {
+
+            renderer.setAnimationLoop( render )
+
+        }
+
+        function render() {
+            const time = performance.now() * 0.001 // Convert to seconds
+
+            group.children.forEach(object => {
+                object.position.y = object.userData.initialY + 
+                    Math.sin(time * object.userData.floatSpeed) * object.userData.floatAmplitude
+                object.position.x = object.userData.initialX + 
+                    Math.cos(time * object.userData.floatSpeed * 0.7) * object.userData.floatAmplitude * 0.7
+                object.position.z = object.userData.initialZ + 
+                    Math.sin(time * object.userData.floatSpeed * 0.7) * object.userData.floatAmplitude * 0.7
+
+                object.material.uniforms.time.value = time
+
+                // Update sprite rotation to face the camera
+                const sprite = object.children.find(child => child instanceof THREE.Sprite)
+                if (sprite && sprite.visible) {
+                    // Make the sprite face the camera
+                    sprite.lookAt(camera.position)
+                    
+                    // Adjust sprite position based on camera view
+                    const cameraDirection = new THREE.Vector3()
+                    camera.getWorldDirection(cameraDirection)
+                    const rightVector = new THREE.Vector3().crossVectors(cameraDirection, camera.up).normalize()
+                    
+                    sprite.position.copy(rightVector.multiplyScalar(0.3))  // Move right
+                    sprite.position.y += 0.1  // Move slightly up
+                    sprite.position.z += 0.3  // Move forward
+                }
+            })
+
+            cleanIntersected()
+
+            intersectObjects( controller1 )
+            intersectObjects( controller2 )
+
+            renderer.render( scene, camera )
+
+        }
+    </script>
+
+</body>
+</html>
